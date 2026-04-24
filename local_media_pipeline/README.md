@@ -1,30 +1,31 @@
 # local_media_pipeline
 
-Windows 本地照片/视频整理系统 V1.0（单副本安全移动策略）。
+Windows 本地照片/视频整理系统 V1.0。
 
-## 数据流策略
+## 扫描能力（增强版）
 
-文件生命周期：`INBOX -> 02_PROCESSING -> VAULT`
+- 支持**暂停 / 继续 / 停止**扫描。
+- 停止后可续扫；续扫采用**增量扫描**（按 `current_path + file_size + mtime` 快速跳过未变化文件），不会重复入库。
+- 扫描过程只读 INBOX：不会移动、删除、重命名文件；不生成缩略图、不抽视频帧、不跑 AI、不计算 full_hash。
 
-### 两种模式
+## 文件类型统计与未知扩展名发现
 
-1. **普通复制模式**（`single_copy_mode=false`）
-   - 进入批次时仅复制到 SSD，不删除 INBOX 源文件。
-   - 更安全，但会占用双倍空间。
+- Dashboard 基于 SQLite `files` 表统计：
+  - 总数、image、raw_image、video、document、archive、software、audio、other、ERROR、ARCHIVED。
+- RAW 默认支持：`.arw .raw .cr2 .cr3 .nef .raf .dng .orf .rw2 .srw .pef .x3f`。
+- 扫描会更新 `extension_stats`，自动发现未知扩展名。
+- 未知扩展名超过阈值（默认 10）会提示用户确认分类。
+- 用户确认后写入 `confirmed_type`，后续扫描按该类型归类，并批量修正已入库文件类型。
 
-2. **单副本安全移动模式**（`single_copy_mode=true`）
-   - 进入批次时执行“复制 -> 校验 -> 删除源文件”。
-   - 仅在校验成功后才删除 INBOX 源文件，节省硬盘空间。
-   - 推荐 8TB 空间紧张时启用。
+## 单副本安全移动模式
 
-## 关键保证
+- 普通复制模式（`single_copy_mode=false`）：提取批次到 PROCESSING 时**不会删除 INBOX 源文件**。
+- 单副本安全移动模式（`single_copy_mode=true`）：校验成功后删除 INBOX 源文件，节省空间。
+- 归档时也采用安全移动：仅在校验通过后删除 SSD 源文件。
 
-- 扫描阶段只读，不删除 INBOX 文件。
-- 只有进入批次处理且校验成功后，才删除 INBOX 原文件（仅单副本模式）。
-- 归档成功并校验通过后，才删除 SSD 源文件。
-- 任何失败都会保留源文件，并写入日志。
+## 配置文件
 
-## 配置（config.json）
+`config.json`：
 
 ```json
 {
@@ -38,26 +39,18 @@ Windows 本地照片/视频整理系统 V1.0（单副本安全移动策略）。
 }
 ```
 
-## 首次使用步骤
-
-1. 启动程序后点击“设置路径”。
-2. 选择并保存：INBOX、VAULT、PIPELINE_ROOT。
-3. 可选：启用“单副本安全移动模式（节省硬盘空间）”。
-4. 点击“初始化数据库”。
-5. 点击“扫描 INBOX”。
-6. 在“批次”页面执行“提取批次到 PROCESSING”与“归档 READY_TO_ARCHIVE”。
-
-## SSD 安全限制
-
-- `batch_size_gb` 从配置读取，默认 100GB。
-- 提取批次时，系统会检查 SSD 可用空间。
-- 批次大小不得超过可用空间的 60%。
-- 空间不足时会提示：
-  `SSD 可用空间不足，请减小批次大小或清理工作区。`
-
 ## 运行
 
 ```bash
 pip install -r requirements.txt
 python main.py
 ```
+
+## 8TB 扫描性能规则
+
+- 扫描采用流式遍历（`os.walk`），边遍历边写 SQLite，不会一次性加载全量路径。
+- 已入库且 `file_size + mtime` 未变化的文件会快速跳过，不重算 quick_hash、不重复累计扩展名统计。
+- 不使用 `ProcessPoolExecutor` 或大并发随机读盘。
+- UI 进度按批次（默认每 500 个文件）刷新，不做每文件刷新。
+- `quick_hash` 只读前 64KB；`full_hash` 仅在 SSD 批处理阶段按分块读取。
+- 不使用 tqdm；通过 PySide6 signal 刷新日志与进度。
