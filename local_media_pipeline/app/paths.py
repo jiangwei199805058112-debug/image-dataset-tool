@@ -17,6 +17,7 @@ class AppPaths:
     reviewed_dir: Path
     to_delete_dir: Path
     ready_to_archive_dir: Path
+    temp_dir: Path
     preview_cache_dir: Path
 
 
@@ -36,6 +37,7 @@ def build_paths(config: dict) -> AppPaths:
         reviewed_dir=pipeline_root / "04_REVIEWED",
         to_delete_dir=pipeline_root / "05_TO_DELETE",
         ready_to_archive_dir=pipeline_root / "06_READY_TO_ARCHIVE",
+        temp_dir=pipeline_root / "TEMP",
         preview_cache_dir=pipeline_root / "TEMP" / "preview_cache",
     )
 
@@ -48,6 +50,7 @@ def init_pipeline_directories(paths: AppPaths) -> tuple[bool, str]:
         paths.reviewed_dir,
         paths.to_delete_dir,
         paths.ready_to_archive_dir,
+        paths.temp_dir,
         paths.preview_cache_dir,
     ]
     try:

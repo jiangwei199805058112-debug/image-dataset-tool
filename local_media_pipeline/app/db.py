@@ -79,13 +79,127 @@ class Database:
             """
         ).fetchone()
         if rows is None:
-            return {
-                "total": 0,
-                "image_count": 0,
-                "video_count": 0,
-                "document_count": 0,
-                "other_count": 0,
-                "archived_count": 0,
-                "error_count": 0,
-            }
+            return {"total": 0, "image_count": 0, "video_count": 0, "document_count": 0, "other_count": 0, "archived_count": 0, "error_count": 0}
         return {k: int(rows[k] or 0) for k in rows.keys()}
+
+    def fetch_candidate_batch_files(self, limit_bytes: int) -> list[sqlite3.Row]:
+        rows = self.execute(
+            """
+            SELECT id, current_path, file_name, file_size, status
+            FROM files
+            WHERE status IN ('SURVEYED', 'INBOX')
+            ORDER BY mtime ASC
+            """
+        ).fetchall()
+        picked: list[sqlite3.Row] = []
+        total = 0
+        for row in rows:
+            size = int(row["file_size"] or 0)
+            if total + size > limit_bytes and picked:
+                break
+            total += size
+            picked.append(row)
+        return picked
+
+    def fetch_ready_to_archive_files(self, limit: int = 2000) -> list[sqlite3.Row]:
+        return self.execute(
+            """
+            SELECT id, current_path, file_name, category, event_id, mtime
+            FROM files
+            WHERE status='READY_TO_ARCHIVE'
+            ORDER BY updated_at ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    def create_archive_job(self, batch_id: str | None, target_type: str, target_id: str, source_path: str, temp_path: str, final_path: str) -> int:
+        cur = self.execute(
+            """
+            INSERT INTO archive_jobs(batch_id, target_type, target_id, source_path, temp_path, final_path, status, started_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (batch_id, target_type, target_id, source_path, temp_path, final_path, "COPYING", int(time.time())),
+        )
+        self.commit()
+        return int(cur.lastrowid)
+
+    def update_archive_job(
+        self,
+        job_id: int,
+        status: str,
+        source_hash: str | None = None,
+        target_hash: str | None = None,
+        bytes_copied: int | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        self.execute(
+            """
+            UPDATE archive_jobs
+            SET status=?, source_hash=COALESCE(?, source_hash), target_hash=COALESCE(?, target_hash),
+                bytes_copied=COALESCE(?, bytes_copied), error_message=?,
+                finished_at=CASE WHEN ? IN ('FAILED', 'CLEANED') THEN ? ELSE finished_at END
+            WHERE id=?
+            """,
+            (
+                status,
+                source_hash,
+                target_hash,
+                bytes_copied,
+                error_message,
+                status,
+                int(time.time()),
+                job_id,
+            ),
+        )
+        self.commit()
+
+    def mark_file_staged(self, file_id: int, new_path: str, batch_id: str) -> None:
+        self.execute(
+            """
+            UPDATE files
+            SET current_path=?, status='STAGED', batch_id_last=?, error_message=NULL, updated_at=?
+            WHERE id=?
+            """,
+            (new_path, batch_id, int(time.time()), file_id),
+        )
+        self.commit()
+
+    def mark_file_archived(self, file_id: int, new_path: str) -> None:
+        self.execute(
+            """
+            UPDATE files
+            SET current_path=?, archived_path=?, status='ARCHIVED', error_message=NULL, updated_at=?
+            WHERE id=?
+            """,
+            (new_path, new_path, int(time.time()), file_id),
+        )
+        self.commit()
+
+    def mark_file_error(self, file_id: int, message: str, fallback_status: str = "ERROR") -> None:
+        self.execute(
+            """
+            UPDATE files
+            SET status=?, error_message=?, updated_at=?
+            WHERE id=?
+            """,
+            (fallback_status, message, int(time.time()), file_id),
+        )
+        self.commit()
+
+    def create_batch(self, batch_id: str, name: str, target_path: str, total_files: int, total_size: int) -> None:
+        self.execute(
+            """
+            INSERT INTO batches(id, name, source_scope, target_path, total_files, total_size_bytes, gap_mode, status, started_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (batch_id, name, "INBOX", target_path, total_files, total_size, "NORMAL", "STAGING", int(time.time())),
+        )
+        self.commit()
+
+    def finish_batch(self, batch_id: str, status: str, note: str = "") -> None:
+        self.execute(
+            "UPDATE batches SET status=?, finished_at=?, note=? WHERE id=?",
+            (status, int(time.time()), note, batch_id),
+        )
+        self.commit()

@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Callable
 
+from app.archive import ArchiveResult, ArchiveService
+from app.batch import BatchExtractResult, BatchService
 from app.config import load_config, save_config
 from app.db import Database
 from app.logger import setup_logger
@@ -27,12 +29,23 @@ class AppServices:
         self.logger = setup_logger(self.paths.log_path) if self.paths.pipeline_root else setup_logger(self.project_root / "pipeline.log")
         self.db = Database(self.paths.database_path)
 
-    def save_paths_config(self, inbox_path: str, vault_path: str, pipeline_root: str) -> tuple[bool, str]:
+    def save_paths_config(
+        self,
+        inbox_path: str,
+        vault_path: str,
+        pipeline_root: str,
+        batch_size_gb: int,
+        single_copy_mode: bool,
+    ) -> tuple[bool, str]:
         try:
             payload = {
                 "inbox_path": inbox_path,
                 "vault_path": vault_path,
                 "pipeline_root": pipeline_root,
+                "batch_size_gb": int(batch_size_gb),
+                "single_copy_mode": bool(single_copy_mode),
+                "gap_mode": self.config.get("gap_mode", "NORMAL"),
+                "snooze_days": int(self.config.get("snooze_days", 7)),
             }
             save_config(self.project_root, payload)
             self.reload_config()
@@ -76,6 +89,14 @@ class AppServices:
             quick_hash_bytes=65536,
         )
         return scanner.run_scan(progress=progress)
+
+    def extract_batch_to_processing(self, progress: Callable[[str], None] | None = None) -> BatchExtractResult:
+        batch_service = BatchService(self.db, self.paths, self.config)
+        return batch_service.extract_to_processing(progress=progress)
+
+    def archive_ready_files(self, progress: Callable[[str], None] | None = None) -> ArchiveResult:
+        archive_service = ArchiveService(self.db, self.paths)
+        return archive_service.archive_ready_files(progress=progress)
 
     def safe_log_db(self, level: str, module: str, message: str) -> None:
         try:

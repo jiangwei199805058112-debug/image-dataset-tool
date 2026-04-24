@@ -4,10 +4,14 @@ import json
 from pathlib import Path
 from typing import Any
 
-DEFAULT_CONFIG: dict[str, str] = {
+DEFAULT_CONFIG: dict[str, Any] = {
     "inbox_path": "",
     "vault_path": "",
     "pipeline_root": "",
+    "batch_size_gb": 100,
+    "single_copy_mode": False,
+    "gap_mode": "NORMAL",
+    "snooze_days": 7,
 }
 
 

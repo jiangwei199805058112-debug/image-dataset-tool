@@ -1,5 +1,9 @@
 {
   "inbox_path": "",
   "vault_path": "",
-  "pipeline_root": ""
+  "pipeline_root": "",
+  "batch_size_gb": 100,
+  "single_copy_mode": false,
+  "gap_mode": "NORMAL",
+  "snooze_days": 7
 }

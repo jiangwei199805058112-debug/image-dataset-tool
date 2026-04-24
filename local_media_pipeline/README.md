@@ -1,62 +1,63 @@
 # local_media_pipeline
 
-Windows 本地照片/视频整理系统 V1.0（第一阶段骨架版）。
+Windows 本地照片/视频整理系统 V1.0（单副本安全移动策略）。
 
-## 目标
+## 数据流策略
 
-- 扫描用户自定义 `INBOX` 文件夹。
-- 初始化 SQLite 数据库（WAL）。
-- 增量入库文件基础元数据。
-- 提供 PySide6 中文 Dashboard，支持路径设置、初始化与扫描。
+文件生命周期：`INBOX -> 02_PROCESSING -> VAULT`
 
-## 环境要求
+### 两种模式
 
-1. 安装 Python 3.12+
-2. 安装依赖：
+1. **普通复制模式**（`single_copy_mode=false`）
+   - 进入批次时仅复制到 SSD，不删除 INBOX 源文件。
+   - 更安全，但会占用双倍空间。
 
-```bash
-pip install -r requirements.txt
-```
+2. **单副本安全移动模式**（`single_copy_mode=true`）
+   - 进入批次时执行“复制 -> 校验 -> 删除源文件”。
+   - 仅在校验成功后才删除 INBOX 源文件，节省硬盘空间。
+   - 推荐 8TB 空间紧张时启用。
 
-3. 系统安装 `ffmpeg` 并加入 `PATH`。
+## 关键保证
 
-## 运行
+- 扫描阶段只读，不删除 INBOX 文件。
+- 只有进入批次处理且校验成功后，才删除 INBOX 原文件（仅单副本模式）。
+- 归档成功并校验通过后，才删除 SSD 源文件。
+- 任何失败都会保留源文件，并写入日志。
 
-```bash
-python main.py
+## 配置（config.json）
+
+```json
+{
+  "inbox_path": "",
+  "vault_path": "",
+  "pipeline_root": "",
+  "batch_size_gb": 100,
+  "single_copy_mode": false,
+  "gap_mode": "NORMAL",
+  "snooze_days": 7
+}
 ```
 
 ## 首次使用步骤
 
 1. 启动程序后点击“设置路径”。
-2. 选择并保存：
-   - `INBOX 路径`
-   - `VAULT 路径`
-   - `PIPELINE_ROOT`
-3. 点击“初始化数据库”。
-4. 点击“扫描 INBOX”。
+2. 选择并保存：INBOX、VAULT、PIPELINE_ROOT。
+3. 可选：启用“单副本安全移动模式（节省硬盘空间）”。
+4. 点击“初始化数据库”。
+5. 点击“扫描 INBOX”。
+6. 在“批次”页面执行“提取批次到 PROCESSING”与“归档 READY_TO_ARCHIVE”。
 
-## 路径说明
+## SSD 安全限制
 
-- 路径全部来自 `config.json`。
-- 路径可以自由修改，不依赖固定盘符。
-- 保存路径时会自动创建以下目录（如不存在）：
-  - `PIPELINE_ROOT/SYSTEM`
-  - `PIPELINE_ROOT/02_PROCESSING`
-  - `PIPELINE_ROOT/03_UNCERTAIN`
-  - `PIPELINE_ROOT/04_REVIEWED`
-  - `PIPELINE_ROOT/05_TO_DELETE`
-  - `PIPELINE_ROOT/06_READY_TO_ARCHIVE`
-  - `PIPELINE_ROOT/TEMP/preview_cache`
+- `batch_size_gb` 从配置读取，默认 100GB。
+- 提取批次时，系统会检查 SSD 可用空间。
+- 批次大小不得超过可用空间的 60%。
+- 空间不足时会提示：
+  `SSD 可用空间不足，请减小批次大小或清理工作区。`
 
-## 项目结构
+## 运行
 
-- `app/`：配置、路径、数据库、扫描逻辑。
-- `ui/`：主窗口、Dashboard、路径设置弹窗。
-- `scripts/`：命令行初始化与扫描脚本。
-
-## 说明
-
-- 如果 `inbox_path` 为空或不存在，程序启动会提示“请先设置路径”并自动打开设置窗口。
-- 路径相关操作做了异常捕获并写入日志，避免程序崩溃。
-- 当前阶段不包含 AI、缩略图生成、视频抽帧、全量 hash。
+```bash
+pip install -r requirements.txt
+python main.py
+```

@@ -20,7 +20,7 @@ class MainWindow(QMainWindow):
         self.dashboard = DashboardPage(services)
         tabs.addTab(self.dashboard, "总览")
         tabs.addTab(ScanPage(), "扫描")
-        tabs.addTab(BatchPage(), "批次")
+        tabs.addTab(BatchPage(services), "批次")
         tabs.addTab(ReviewPage(), "复核")
 
         self.setCentralWidget(tabs)
