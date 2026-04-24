@@ -83,13 +83,21 @@ class AppServices:
     def scan_inbox(self, progress: Callable[[str], None] | None = None) -> ScanResult:
         if not self.has_required_paths():
             raise ValueError("请先设置路径后再扫描。")
-        scanner = InboxScanner(
-            db=self.db,
-            inbox_root=self.paths.inbox_path,
-            quick_hash_bytes=65536,
-            exclude_roots=[self.paths.vault_path, self.paths.pipeline_root],
-        )
-        return scanner.run_scan(progress=progress)
+
+        # 每个线程独立创建并关闭自己的 SQLite 连接，禁止跨线程复用。
+        thread_db = Database(self.paths.database_path)
+        thread_db.connect()
+        thread_db.init_schema()
+        try:
+            scanner = InboxScanner(
+                db=thread_db,
+                inbox_root=self.paths.inbox_path,
+                quick_hash_bytes=65536,
+                exclude_roots=[self.paths.vault_path, self.paths.pipeline_root],
+            )
+            return scanner.run_scan(progress=progress)
+        finally:
+            thread_db.close()
 
     def extract_batch_to_processing(self, progress: Callable[[str], None] | None = None) -> BatchExtractResult:
         batch_service = BatchService(self.db, self.paths, self.config)

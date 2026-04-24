@@ -13,11 +13,18 @@ class Database:
         self.db_path = db_path
         self.conn: sqlite3.Connection | None = None
 
+    @staticmethod
+    def create_connection(db_path: Path) -> sqlite3.Connection:
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        for pragma in schema.PRAGMAS:
+            conn.execute(pragma)
+        conn.commit()
+        return conn
+
     def connect(self) -> None:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(self.db_path)
-        self.conn.row_factory = sqlite3.Row
-        self._apply_pragmas()
+        self.conn = self.create_connection(self.db_path)
 
     def _apply_pragmas(self) -> None:
         assert self.conn is not None
