@@ -109,6 +109,7 @@ class ImageViewer(QWidget):
         self.pending_full: set[str] = set()
         self.pending_thumb: set[str] = set()
         self.thumb_widgets: dict[int, ThumbnailLabel] = {}
+        self.marked_paths: set[str] = set()
 
         self.loader_thread = QThread(self)
         self.loader_worker = ImageLoaderWorker()
@@ -187,6 +188,9 @@ class ImageViewer(QWidget):
         self.btn_set_3 = QPushButton("设置3号文件夹")
         self.btn_set_3.clicked.connect(lambda: self.set_target_dir(3))
 
+        self.btn_move_marked_to_2 = QPushButton("移动标记到2号文件夹")
+        self.btn_move_marked_to_2.clicked.connect(self.move_marked_to_target_2)
+
         self.folder_label = QLabel("当前文件夹：未打开")
         self.folder_label.setObjectName("infoLabel")
 
@@ -194,6 +198,7 @@ class ImageViewer(QWidget):
         top_bar.addWidget(self.btn_set_1)
         top_bar.addWidget(self.btn_set_2)
         top_bar.addWidget(self.btn_set_3)
+        top_bar.addWidget(self.btn_move_marked_to_2)
         top_bar.addWidget(self.folder_label, 1)
 
         self.target_label_1 = QLabel()
@@ -262,6 +267,7 @@ class ImageViewer(QWidget):
         self.thumb_cache.clear()
         self.pending_full.clear()
         self.pending_thumb.clear()
+        self.marked_paths.clear()
 
     def prune_caches(self):
         if not self.image_paths or self.current_index < 0:
@@ -388,10 +394,19 @@ class ImageViewer(QWidget):
                 widget.deleteLater()
 
     def apply_thumb_style(self, thumb: ThumbnailLabel, index: int):
-        if index == self.current_index:
+        is_marked = 0 <= index < len(self.image_paths) and self.image_paths[index] in self.marked_paths
+        if is_marked and index == self.current_index:
+            thumb.setStyleSheet("background:#3a3500; border:4px solid #ffd84d;")
+        elif is_marked:
+            thumb.setStyleSheet("background:#2b2b2b; border:3px solid #ffd84d;")
+        elif index == self.current_index:
             thumb.setStyleSheet("background:#2b2b2b; border:3px solid #00a8ff;")
         else:
             thumb.setStyleSheet("background:#2b2b2b; border:2px solid #555;")
+
+    def refresh_thumbnail_styles(self):
+        for index, label in self.thumb_widgets.items():
+            self.apply_thumb_style(label, index)
 
     def request_thumbnail_load(self, index: int, token: int):
         if not (0 <= index < len(self.image_paths)):
@@ -580,6 +595,106 @@ class ImageViewer(QWidget):
         self.thumb_cache.pop(path, None)
         self.pending_full.discard(path)
         self.pending_thumb.discard(path)
+        self.marked_paths.discard(path)
+
+    def make_unique_target_path(self, target_dir: str, filename: str) -> str:
+        target_dir = self.normalize_path(target_dir)
+        unique_path = self.normalize_path(os.path.join(target_dir, filename))
+        base, ext = os.path.splitext(filename)
+        counter = 1
+        while os.path.exists(unique_path):
+            unique_path = self.normalize_path(os.path.join(target_dir, f"{base}_{counter}{ext}"))
+            counter += 1
+        return unique_path
+
+    def toggle_mark_current(self):
+        if not self.image_paths or self.current_index < 0:
+            return
+
+        current_path = self.normalize_path(self.image_paths[self.current_index])
+        if current_path in self.marked_paths:
+            self.marked_paths.discard(current_path)
+            self.info_label.setText(f"已取消标记：{os.path.basename(current_path)}")
+        else:
+            self.marked_paths.add(current_path)
+            self.info_label.setText(f"已标记：{os.path.basename(current_path)}")
+
+        self.refresh_thumbnail_styles()
+
+    def move_marked_to_target_2(self):
+        target_dir = self.target_dirs.get(2)
+        if not target_dir:
+            QMessageBox.warning(self, "提示", "2号文件夹还没设置")
+            return
+
+        target_dir = self.normalize_path(target_dir)
+        if not os.path.isdir(target_dir):
+            QMessageBox.warning(self, "提示", "2号文件夹不存在")
+            return
+
+        if not self.marked_paths:
+            self.info_label.setText("没有已标记图片")
+            return
+
+        marked_to_move = [
+            self.normalize_path(path)
+            for path in self.image_paths
+            if self.normalize_path(path) in self.marked_paths
+        ]
+
+        if not marked_to_move:
+            self.marked_paths.clear()
+            self.info_label.setText("没有可移动的已标记图片")
+            self.refresh_thumbnail_styles()
+            return
+
+        moved_paths: list[str] = []
+        move_errors: list[str] = []
+
+        for src_path in marked_to_move:
+            if not os.path.exists(src_path):
+                move_errors.append(f"{os.path.basename(src_path)}：文件不存在")
+                continue
+
+            filename = os.path.basename(src_path)
+            dst_path = self.make_unique_target_path(target_dir, filename)
+
+            try:
+                shutil.move(src_path, dst_path)
+                moved_paths.append(src_path)
+            except Exception as e:
+                move_errors.append(f"{filename}：{e}")
+
+        if moved_paths:
+            moved_set = set(moved_paths)
+            for moved_path in moved_paths:
+                self.remove_path_from_caches(moved_path)
+
+            self.image_paths = [path for path in self.image_paths if self.normalize_path(path) not in moved_set]
+            self.marked_paths.clear()
+
+            if not self.image_paths:
+                self.current_index = -1
+                self.image_label.setPixmap(QPixmap())
+                self.image_label.setText("没有图片了")
+                self.info_label.setText(f"已移动 {len(moved_paths)} 张标记图片到2号文件夹")
+                self.clear_thumbnails()
+            else:
+                if self.current_index >= len(self.image_paths):
+                    self.current_index = len(self.image_paths) - 1
+                self.show_current_image()
+                self.rebuild_visible_thumbnails()
+
+        if move_errors:
+            QMessageBox.warning(self, "部分移动失败", "\\n".join(move_errors[:10]))
+            if moved_paths:
+                self.info_label.setText(
+                    f"已移动 {len(moved_paths)} 张，失败 {len(move_errors)} 张"
+                )
+            else:
+                self.info_label.setText(f"移动失败：{len(move_errors)} 张")
+        elif moved_paths:
+            self.info_label.setText(f"已移动 {len(moved_paths)} 张标记图片到2号文件夹")
 
     def delete_current_image(self):
         if not self.image_paths or self.current_index < 0:
@@ -687,13 +802,7 @@ class ImageViewer(QWidget):
             return
 
         filename = os.path.basename(src_path)
-        dst_path = self.normalize_path(os.path.join(target_dir, filename))
-
-        base, ext = os.path.splitext(filename)
-        counter = 1
-        while os.path.exists(dst_path):
-            dst_path = self.normalize_path(os.path.join(target_dir, f"{base}_{counter}{ext}"))
-            counter += 1
+        dst_path = self.make_unique_target_path(target_dir, filename)
 
         try:
             shutil.move(src_path, dst_path)
@@ -761,12 +870,24 @@ class ImageViewer(QWidget):
             self.show_prev_image()
             return
 
+        if event.key() == Qt.Key_Left:
+            self.show_prev_image()
+            return
+
         if event.key() == Qt.Key_D:
+            self.show_next_image()
+            return
+
+        if event.key() == Qt.Key_Right:
             self.show_next_image()
             return
 
         if event.key() == Qt.Key_X:
             self.delete_current_image()
+            return
+
+        if event.key() == Qt.Key_F:
+            self.toggle_mark_current()
             return
 
         if event.key() == Qt.Key_1:
