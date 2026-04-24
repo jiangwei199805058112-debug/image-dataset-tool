@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 import time
 from dataclasses import dataclass
@@ -11,6 +12,16 @@ from app.hashing import file_uid, quick_hash_md5
 from app.metadata import detect_file_type
 
 ProgressCallback = Callable[[str], None]
+DOWNLOAD_TEMP_SUFFIXES = {
+    ".tmp",
+    ".downloading",
+    ".crdownload",
+    ".part",
+    ".baiduyun",
+    ".aria2",
+    ".td",
+    ".cfg",
+}
 
 
 @dataclass
@@ -27,6 +38,7 @@ class InboxScanner:
         self.db = db
         self.inbox_root = inbox_root
         self.quick_hash_bytes = quick_hash_bytes
+        self.logger = logging.getLogger("local_media_pipeline")
         assert "SURVEYED" in FILE_STATUSES
 
     def run_scan(self, progress: ProgressCallback | None = None) -> ScanResult:
@@ -38,6 +50,7 @@ class InboxScanner:
         if not self.inbox_root.exists() or not self.inbox_root.is_dir():
             message = f"INBOX 路径不存在：{self.inbox_root}"
             emit(message)
+            self.logger.error(message)
             try:
                 self.db.insert_log("ERROR", "scanner", message, target_type="path", target_id=str(self.inbox_root))
             except Exception:
@@ -53,9 +66,19 @@ class InboxScanner:
             for name in files:
                 result.scanned_files += 1
                 path = root_path / name
+                lower_name = name.lower()
+
+                if any(lower_name.endswith(suffix) for suffix in DOWNLOAD_TEMP_SUFFIXES):
+                    result.skipped_files += 1
+                    continue
+
                 try:
                     stat = path.stat()
                     size = int(stat.st_size)
+                    if size <= 0:
+                        result.skipped_files += 1
+                        continue
+
                     mtime = int(stat.st_mtime)
                     ctime = int(stat.st_ctime)
                     current_path = str(path.resolve())
@@ -132,6 +155,7 @@ class InboxScanner:
                     result.error_files += 1
                     message = f"扫描文件失败：{path}，错误：{exc}"
                     emit(message)
+                    self.logger.exception(message)
                     try:
                         self.db.insert_log("ERROR", "scanner", message, target_type="file", target_id=str(path))
                     except Exception:
