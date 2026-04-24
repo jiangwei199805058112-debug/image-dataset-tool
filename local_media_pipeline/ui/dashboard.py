@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.services import AppServices
+from ui.path_settings_dialog import PathSettingsDialog
 
 
 class ScanWorker(QObject):
@@ -25,16 +26,20 @@ class ScanWorker(QObject):
         self.services = services
 
     def run(self) -> None:
-        result = self.services.scan_inbox(progress=self.progress.emit)
-        self.finished.emit(
-            {
-                "scanned": result.scanned_files,
-                "new": result.new_files,
-                "updated": result.updated_files,
-                "skipped": result.skipped_files,
-                "errors": result.error_files,
-            }
-        )
+        try:
+            result = self.services.scan_inbox(progress=self.progress.emit)
+            self.finished.emit(
+                {
+                    "scanned": result.scanned_files,
+                    "new": result.new_files,
+                    "updated": result.updated_files,
+                    "skipped": result.skipped_files,
+                    "errors": result.error_files,
+                }
+            )
+        except Exception as exc:
+            self.progress.emit(f"扫描失败：{exc}")
+            self.finished.emit({"scanned": 0, "new": 0, "updated": 0, "skipped": 0, "errors": 1})
 
 
 class DashboardPage(QWidget):
@@ -44,6 +49,7 @@ class DashboardPage(QWidget):
         self.scan_thread: QThread | None = None
         self.scan_worker: ScanWorker | None = None
         self._build_ui()
+        self.refresh_path_labels()
         self.refresh_stats()
 
     def _build_ui(self) -> None:
@@ -51,10 +57,14 @@ class DashboardPage(QWidget):
 
         path_box = QGroupBox("路径信息")
         path_form = QFormLayout()
-        self.db_path_label = QLabel(str(self.services.paths.database_path))
-        self.inbox_path_label = QLabel(str(self.services.paths.inbox_root))
+        self.db_path_label = QLabel("")
+        self.inbox_path_label = QLabel("")
+        self.vault_path_label = QLabel("")
+        self.pipeline_root_label = QLabel("")
         path_form.addRow("当前数据库路径：", self.db_path_label)
         path_form.addRow("INBOX 路径：", self.inbox_path_label)
+        path_form.addRow("VAULT 路径：", self.vault_path_label)
+        path_form.addRow("PIPELINE_ROOT：", self.pipeline_root_label)
         path_box.setLayout(path_form)
 
         stats_box = QGroupBox("统计")
@@ -77,10 +87,13 @@ class DashboardPage(QWidget):
         stats_box.setLayout(stats_form)
 
         btn_row = QHBoxLayout()
+        self.path_btn = QPushButton("设置路径")
         self.init_btn = QPushButton("初始化数据库")
         self.scan_btn = QPushButton("扫描 INBOX")
+        self.path_btn.clicked.connect(self.open_path_settings)
         self.init_btn.clicked.connect(self.on_init_db)
         self.scan_btn.clicked.connect(self.on_scan)
+        btn_row.addWidget(self.path_btn)
         btn_row.addWidget(self.init_btn)
         btn_row.addWidget(self.scan_btn)
 
@@ -94,21 +107,39 @@ class DashboardPage(QWidget):
         root.addWidget(self.log_box)
         self.setLayout(root)
 
+    def refresh_path_labels(self) -> None:
+        self.db_path_label.setText(str(self.services.paths.database_path))
+        self.inbox_path_label.setText(str(self.services.paths.inbox_path))
+        self.vault_path_label.setText(str(self.services.paths.vault_path))
+        self.pipeline_root_label.setText(str(self.services.paths.pipeline_root))
+
     def append_log(self, text: str) -> None:
         self.log_box.append(text)
-        try:
-            self.services.db.insert_log("INFO", "ui.dashboard", text)
-        except Exception:
-            pass
+        self.services.safe_log_db("INFO", "ui.dashboard", text)
+
+    def open_path_settings(self) -> None:
+        dialog = PathSettingsDialog(self.services, self)
+        if dialog.exec():
+            self.refresh_path_labels()
+            self.append_log("路径配置已更新")
+            self.refresh_stats()
 
     def on_init_db(self) -> None:
         ok, message = self.services.initialize_database()
         self.append_log(message)
         if not ok:
             QMessageBox.warning(self, "初始化失败", message)
+        self.refresh_path_labels()
         self.refresh_stats()
 
     def on_scan(self) -> None:
+        if not self.services.has_required_paths() or not self.services.paths.inbox_path.exists():
+            message = "INBOX 路径不存在，请先设置路径。"
+            self.append_log(message)
+            QMessageBox.warning(self, "提示", message)
+            self.open_path_settings()
+            return
+
         self.scan_btn.setEnabled(False)
         self.append_log("开始扫描 INBOX...")
 

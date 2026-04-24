@@ -17,13 +17,16 @@ def main() -> int:
     window = MainWindow(services)
     window.show()
 
+    if not services.has_required_paths() or not services.paths.inbox_path.exists():
+        QMessageBox.information(window, "提示", "请先设置路径")
+        window.dashboard.open_path_settings()
+
     init_ok, init_msg = services.initialize_database()
+    window.dashboard.append_log(init_msg)
     if not init_ok:
         QMessageBox.warning(window, "初始化提示", init_msg)
-        window.dashboard.append_log(init_msg)
-    else:
-        window.dashboard.append_log(init_msg)
-        window.dashboard.refresh_stats()
+    window.dashboard.refresh_path_labels()
+    window.dashboard.refresh_stats()
 
     return app.exec()
 

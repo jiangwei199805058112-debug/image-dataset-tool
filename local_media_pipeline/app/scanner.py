@@ -35,6 +35,15 @@ class InboxScanner:
                 progress(msg)
 
         result = ScanResult()
+        if not self.inbox_root.exists() or not self.inbox_root.is_dir():
+            message = f"INBOX 路径不存在：{self.inbox_root}"
+            emit(message)
+            try:
+                self.db.insert_log("ERROR", "scanner", message, target_type="path", target_id=str(self.inbox_root))
+            except Exception:
+                pass
+            return result
+
         started_at = int(time.time())
         session_id = self._create_scan_session(started_at)
         emit(f"开始扫描：{self.inbox_root}")
