@@ -87,6 +87,7 @@ class AppServices:
             db=self.db,
             inbox_root=self.paths.inbox_path,
             quick_hash_bytes=65536,
+            exclude_roots=[self.paths.vault_path, self.paths.pipeline_root],
         )
         return scanner.run_scan(progress=progress)
 

@@ -34,10 +34,12 @@ class ScanResult:
 
 
 class InboxScanner:
-    def __init__(self, db, inbox_root: Path, quick_hash_bytes: int = 65536):
+    def __init__(self, db, inbox_root: Path, quick_hash_bytes: int = 65536, exclude_roots: list[Path] | None = None):
         self.db = db
         self.inbox_root = inbox_root
         self.quick_hash_bytes = quick_hash_bytes
+        self.exclude_roots = [p.resolve() for p in (exclude_roots or []) if str(p)]
+        self.exclude_dir_names = {"_VAULT_", "_ARCHIVE_", "DATA_PIPELINE"}
         self.logger = logging.getLogger("local_media_pipeline")
         assert "SURVEYED" in FILE_STATUSES
 
@@ -61,8 +63,15 @@ class InboxScanner:
         session_id = self._create_scan_session(started_at)
         emit(f"开始扫描：{self.inbox_root}")
 
-        for root, _, files in os.walk(self.inbox_root):
-            root_path = Path(root)
+        for root, dirs, files in os.walk(self.inbox_root, topdown=True):
+            root_path = Path(root).resolve()
+
+            if self._is_excluded_root(root_path):
+                dirs[:] = []
+                continue
+
+            dirs[:] = [d for d in dirs if not self._is_excluded_dir(root_path / d)]
+
             for name in files:
                 result.scanned_files += 1
                 path = root_path / name
@@ -167,6 +176,19 @@ class InboxScanner:
             f" 跳过={result.skipped_files}, 错误={result.error_files}"
         )
         return result
+
+
+    def _is_excluded_root(self, path: Path) -> bool:
+        for ex in self.exclude_roots:
+            try:
+                if path == ex or ex in path.parents:
+                    return True
+            except Exception:
+                continue
+        return any(name in self.exclude_dir_names for name in path.parts)
+
+    def _is_excluded_dir(self, path: Path) -> bool:
+        return self._is_excluded_root(path.resolve())
 
     def _create_scan_session(self, started_at: int) -> int:
         cur = self.db.execute(
