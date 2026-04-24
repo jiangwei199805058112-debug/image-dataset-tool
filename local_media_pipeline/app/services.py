@@ -80,7 +80,7 @@ class AppServices:
             self.safe_log_db("ERROR", "services", err)
             return False, err
 
-    def scan_inbox(self, progress: Callable[[dict], None] | None = None) -> ScanResult:
+    def scan_inbox(self, progress: Callable[[str], None] | None = None) -> ScanResult:
         if not self.has_required_paths():
             raise ValueError("请先设置路径后再扫描。")
 
@@ -116,13 +116,3 @@ class AppServices:
                 self.db.insert_log(level, module, message)
         except Exception:
             self.logger.warning(message)
-
-    def get_unknown_extensions(self):
-        if self.db.conn is None:
-            self.db.connect(); self.db.init_schema()
-        return self.db.get_unknown_extensions(10)
-
-    def confirm_extension_type(self, ext: str, file_type: str, ignored: bool = False) -> None:
-        if self.db.conn is None:
-            self.db.connect(); self.db.init_schema()
-        self.db.confirm_extension_type(ext.lower(), file_type, 1 if ignored else 0)
