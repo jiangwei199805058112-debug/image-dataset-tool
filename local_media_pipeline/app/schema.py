@@ -156,28 +156,12 @@ TABLES_SQL = [
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       root_path TEXT,
       status TEXT,
-      last_scanned_path TEXT,
       scanned_files INTEGER DEFAULT 0,
       new_files INTEGER DEFAULT 0,
       updated_files INTEGER DEFAULT 0,
-      skipped_files INTEGER DEFAULT 0,
-      error_files INTEGER DEFAULT 0,
       started_at INTEGER,
-      updated_at INTEGER,
       finished_at INTEGER,
       note TEXT
-    );
-    """,
-    """
-    CREATE TABLE IF NOT EXISTS extension_stats (
-      ext TEXT PRIMARY KEY,
-      detected_count INTEGER DEFAULT 0,
-      guessed_type TEXT,
-      confirmed_type TEXT,
-      is_known INTEGER DEFAULT 0,
-      is_ignored INTEGER DEFAULT 0,
-      first_seen_at INTEGER,
-      last_seen_at INTEGER
     );
     """,
     """
