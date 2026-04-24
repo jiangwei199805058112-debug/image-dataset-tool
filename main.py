@@ -3,10 +3,12 @@ import sys
 import shutil
 from typing import Optional
 
-from PySide6.QtCore import Qt, QSize
+from PIL import Image, ImageOps
+from PySide6.QtCore import QObject, QThread, Qt, QSize, Signal, Slot
 from PySide6.QtGui import (
     QDragEnterEvent,
     QDropEvent,
+    QImage,
     QKeySequence,
     QPixmap,
     QShortcut,
@@ -43,7 +45,35 @@ class ThumbnailLabel(QLabel):
         super().mousePressEvent(event)
 
 
+class ImageLoaderWorker(QObject):
+    image_loaded = Signal(str, int, int, object)
+    thumb_loaded = Signal(str, int, int, object)
+    load_failed = Signal(str, int, int, bool)
+
+    @Slot(str, int, int, int, int, bool)
+    def load_image(self, path: str, index: int, token: int, thumb_w: int, thumb_h: int, is_thumb: bool):
+        try:
+            with Image.open(path) as img:
+                img = ImageOps.exif_transpose(img)
+                if is_thumb:
+                    img.thumbnail((thumb_w, thumb_h), Image.Resampling.LANCZOS)
+                img = img.convert("RGBA")
+                width, height = img.size
+                data = img.tobytes("raw", "RGBA")
+
+            qimage = QImage(data, width, height, width * 4, QImage.Format_RGBA8888).copy()
+
+            if is_thumb:
+                self.thumb_loaded.emit(path, index, token, qimage)
+            else:
+                self.image_loaded.emit(path, index, token, qimage)
+        except Exception:
+            self.load_failed.emit(path, index, token, is_thumb)
+
+
 class ImageViewer(QWidget):
+    request_load = Signal(str, int, int, int, int, bool)
+
     def __init__(self):
         super().__init__()
 
@@ -69,8 +99,25 @@ class ImageViewer(QWidget):
         self.undo_dir = self.normalize_path(os.path.join(os.getcwd(), ".undo_temp"))
         os.makedirs(self.undo_dir, exist_ok=True)
 
-        # 只显示当前附近缩略图，避免一次性载入过多导致卡顿
         self.thumb_radius = 5
+        self.preload_radius = 5
+        self.thumb_size = QSize(146, 96)
+
+        self.navigation_token = 0
+        self.image_cache: dict[str, QImage] = {}
+        self.thumb_cache: dict[str, QImage] = {}
+        self.pending_full: set[str] = set()
+        self.pending_thumb: set[str] = set()
+        self.thumb_widgets: dict[int, ThumbnailLabel] = {}
+
+        self.loader_thread = QThread(self)
+        self.loader_worker = ImageLoaderWorker()
+        self.loader_worker.moveToThread(self.loader_thread)
+        self.request_load.connect(self.loader_worker.load_image, Qt.QueuedConnection)
+        self.loader_worker.image_loaded.connect(self.on_image_loaded)
+        self.loader_worker.thumb_loaded.connect(self.on_thumb_loaded)
+        self.loader_worker.load_failed.connect(self.on_load_failed)
+        self.loader_thread.start()
 
         self.build_ui()
         self.bind_shortcuts()
@@ -209,6 +256,38 @@ class ImageViewer(QWidget):
             f"3号文件夹：{self.target_dirs[3] if self.target_dirs[3] else '未设置'}"
         )
 
+    def clear_runtime_caches(self):
+        self.navigation_token += 1
+        self.image_cache.clear()
+        self.thumb_cache.clear()
+        self.pending_full.clear()
+        self.pending_thumb.clear()
+
+    def prune_caches(self):
+        if not self.image_paths or self.current_index < 0:
+            self.image_cache.clear()
+            self.thumb_cache.clear()
+            return
+
+        keep_start = max(0, self.current_index - self.preload_radius)
+        keep_end = min(len(self.image_paths), self.current_index + self.preload_radius + 1)
+        keep_paths = {self.image_paths[i] for i in range(keep_start, keep_end)}
+
+        for path in list(self.image_cache.keys()):
+            if path not in keep_paths:
+                self.image_cache.pop(path, None)
+
+        thumb_keep_start = max(0, self.current_index - self.thumb_radius)
+        thumb_keep_end = min(len(self.image_paths), self.current_index + self.thumb_radius + 1)
+        thumb_keep_paths = {self.image_paths[i] for i in range(thumb_keep_start, thumb_keep_end)}
+
+        for path in list(self.thumb_cache.keys()):
+            if path not in thumb_keep_paths:
+                self.thumb_cache.pop(path, None)
+
+        self.pending_full.intersection_update(keep_paths)
+        self.pending_thumb.intersection_update(thumb_keep_paths)
+
     def set_target_dir(self, idx: int):
         folder = QFileDialog.getExistingDirectory(self, f"选择{idx}号目标文件夹")
         if not folder:
@@ -284,11 +363,13 @@ class ImageViewer(QWidget):
                 self.image_label.setPixmap(QPixmap())
                 self.image_label.setText("这个文件夹里没有图片")
                 self.info_label.setText("没有找到图片")
+                self.clear_runtime_caches()
                 self.clear_thumbnails()
                 return
 
             self.image_paths = image_paths
             self.current_index = 0
+            self.clear_runtime_caches()
 
             self.show_current_image()
             self.rebuild_visible_thumbnails()
@@ -299,11 +380,29 @@ class ImageViewer(QWidget):
             QApplication.restoreOverrideCursor()
 
     def clear_thumbnails(self):
+        self.thumb_widgets = {}
         while self.thumbnail_layout.count():
             item = self.thumbnail_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+
+    def apply_thumb_style(self, thumb: ThumbnailLabel, index: int):
+        if index == self.current_index:
+            thumb.setStyleSheet("background:#2b2b2b; border:3px solid #00a8ff;")
+        else:
+            thumb.setStyleSheet("background:#2b2b2b; border:2px solid #555;")
+
+    def request_thumbnail_load(self, index: int, token: int):
+        if not (0 <= index < len(self.image_paths)):
+            return
+
+        path = self.image_paths[index]
+        if path in self.thumb_cache or path in self.pending_thumb:
+            return
+
+        self.pending_thumb.add(path)
+        self.request_load.emit(path, index, token, self.thumb_size.width(), self.thumb_size.height(), True)
 
     def rebuild_visible_thumbnails(self):
         self.clear_thumbnails()
@@ -311,46 +410,68 @@ class ImageViewer(QWidget):
         if not self.image_paths or self.current_index < 0:
             return
 
+        token = self.navigation_token
         start = max(0, self.current_index - self.thumb_radius)
         end = min(len(self.image_paths), self.current_index + self.thumb_radius + 1)
 
         for i in range(start, end):
             image_path = self.image_paths[i]
             thumb = ThumbnailLabel(i, self)
+            self.thumb_widgets[i] = thumb
 
-            pixmap = QPixmap(image_path)
-            if not pixmap.isNull():
-                scaled = pixmap.scaled(
-                    QSize(146, 96),
-                    Qt.KeepAspectRatio,
-                    Qt.SmoothTransformation,
-                )
+            cached_thumb = self.thumb_cache.get(image_path)
+            if cached_thumb is not None:
+                pixmap = QPixmap.fromImage(cached_thumb)
+                scaled = pixmap.scaled(self.thumb_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                 thumb.setPixmap(scaled)
             else:
-                thumb.setText("加载失败")
+                thumb.setText("加载中...")
+                self.request_thumbnail_load(i, token)
 
-            if i == self.current_index:
-                thumb.setStyleSheet("background:#2b2b2b; border:3px solid #00a8ff;")
-            else:
-                thumb.setStyleSheet("background:#2b2b2b; border:2px solid #555;")
-
+            self.apply_thumb_style(thumb, i)
             self.thumbnail_layout.addWidget(thumb)
 
         self.thumbnail_layout.addStretch(1)
 
-    def show_current_image(self):
+    def request_full_image(self, index: int, token: int):
+        if not (0 <= index < len(self.image_paths)):
+            return
+
+        path = self.image_paths[index]
+        if path in self.image_cache or path in self.pending_full:
+            return
+
+        self.pending_full.add(path)
+        self.request_load.emit(path, index, token, 0, 0, False)
+
+    def preload_nearby_images(self):
+        if not self.image_paths or self.current_index < 0:
+            return
+
+        token = self.navigation_token
+        start = max(0, self.current_index - self.preload_radius)
+        end = min(len(self.image_paths), self.current_index + self.preload_radius + 1)
+
+        for i in range(start, end):
+            self.request_full_image(i, token)
+            if abs(i - self.current_index) <= self.thumb_radius:
+                self.request_thumbnail_load(i, token)
+
+        self.prune_caches()
+
+    def render_current_image(self):
         if not self.image_paths or self.current_index < 0:
             return
 
         image_path = self.image_paths[self.current_index]
-        pixmap = QPixmap(image_path)
+        image = self.image_cache.get(image_path)
 
-        if pixmap.isNull():
+        if image is None:
             self.image_label.setPixmap(QPixmap())
-            self.image_label.setText("图片加载失败")
-            self.info_label.setText(f"加载失败：{image_path}")
+            self.image_label.setText("正在加载图片...")
             return
 
+        pixmap = QPixmap.fromImage(image)
         scaled = pixmap.scaled(
             self.image_label.size(),
             Qt.KeepAspectRatio,
@@ -362,6 +483,73 @@ class ImageViewer(QWidget):
         self.info_label.setText(
             f"{self.current_index + 1} / {len(self.image_paths)}    {os.path.basename(image_path)}"
         )
+
+    def show_current_image(self):
+        if not self.image_paths or self.current_index < 0:
+            return
+
+        self.navigation_token += 1
+        current_token = self.navigation_token
+
+        self.render_current_image()
+        self.request_full_image(self.current_index, current_token)
+        self.preload_nearby_images()
+
+    @Slot(str, int, int, object)
+    def on_image_loaded(self, path: str, index: int, token: int, image: object):
+        self.pending_full.discard(path)
+        if not isinstance(image, QImage):
+            return
+        self.image_cache[path] = image
+
+        if token != self.navigation_token:
+            return
+
+        if 0 <= self.current_index < len(self.image_paths) and self.image_paths[self.current_index] == path:
+            self.render_current_image()
+
+    @Slot(str, int, int, object)
+    def on_thumb_loaded(self, path: str, index: int, token: int, image: object):
+        self.pending_thumb.discard(path)
+        if not isinstance(image, QImage):
+            return
+        self.thumb_cache[path] = image
+
+        if token != self.navigation_token:
+            return
+
+        label = self.thumb_widgets.get(index)
+        if label is None:
+            return
+
+        if not (0 <= index < len(self.image_paths)) or self.image_paths[index] != path:
+            return
+
+        pixmap = QPixmap.fromImage(image)
+        scaled = pixmap.scaled(self.thumb_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        label.setPixmap(scaled)
+        label.setText("")
+        self.apply_thumb_style(label, index)
+
+    @Slot(str, int, int, bool)
+    def on_load_failed(self, path: str, index: int, token: int, is_thumb: bool):
+        if is_thumb:
+            self.pending_thumb.discard(path)
+            if token != self.navigation_token:
+                return
+            label = self.thumb_widgets.get(index)
+            if label is not None:
+                label.setText("加载失败")
+            return
+
+        self.pending_full.discard(path)
+        if token != self.navigation_token:
+            return
+
+        if 0 <= self.current_index < len(self.image_paths) and self.image_paths[self.current_index] == path:
+            self.image_label.setPixmap(QPixmap())
+            self.image_label.setText("图片加载失败")
+            self.info_label.setText(f"加载失败：{path}")
 
     def jump_to_image(self, index: int):
         if 0 <= index < len(self.image_paths):
@@ -385,6 +573,13 @@ class ImageViewer(QWidget):
             self.current_index += 1
             self.show_current_image()
             self.rebuild_visible_thumbnails()
+
+    def remove_path_from_caches(self, path: str):
+        path = self.normalize_path(path)
+        self.image_cache.pop(path, None)
+        self.thumb_cache.pop(path, None)
+        self.pending_full.discard(path)
+        self.pending_thumb.discard(path)
 
     def delete_current_image(self):
         if not self.image_paths or self.current_index < 0:
@@ -418,6 +613,7 @@ class ImageViewer(QWidget):
             old_record = self.delete_history.pop(0)
             self.safe_remove_backup(old_record["backup_path"])
 
+        self.remove_path_from_caches(current_path)
         del self.image_paths[self.current_index]
 
         if not self.image_paths:
@@ -505,6 +701,7 @@ class ImageViewer(QWidget):
             QMessageBox.critical(self, "错误", f"移动失败：{e}")
             return
 
+        self.remove_path_from_caches(src_path)
         del self.image_paths[self.current_index]
 
         if not self.image_paths:
@@ -589,7 +786,12 @@ class ImageViewer(QWidget):
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if self.image_paths and self.current_index >= 0:
-            self.show_current_image()
+            self.render_current_image()
+
+    def closeEvent(self, event):
+        self.loader_thread.quit()
+        self.loader_thread.wait(2000)
+        super().closeEvent(event)
 
 
 if __name__ == "__main__":
