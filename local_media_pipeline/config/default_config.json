@@ -1,0 +1,26 @@
+{
+  "paths": {
+    "inbox_root": "L:/_INBOX_",
+    "vault_root": "L:/_VAULT_",
+    "meta_backup_root": "L:/_META_BACKUP_",
+    "pipeline_root": "D:/DATA_PIPELINE",
+    "system_dir": "D:/DATA_PIPELINE/SYSTEM",
+    "processing_dir": "D:/DATA_PIPELINE/02_PROCESSING",
+    "uncertain_pending_dir": "D:/DATA_PIPELINE/03_UNCERTAIN/pending",
+    "uncertain_snoozed_dir": "D:/DATA_PIPELINE/03_UNCERTAIN/snoozed",
+    "uncertain_hard_cases_dir": "D:/DATA_PIPELINE/03_UNCERTAIN/hard_cases",
+    "reviewed_dir": "D:/DATA_PIPELINE/04_REVIEWED",
+    "to_delete_duplicates_dir": "D:/DATA_PIPELINE/05_TO_DELETE/duplicates",
+    "to_delete_manual_dir": "D:/DATA_PIPELINE/05_TO_DELETE/manual",
+    "ready_to_archive_dir": "D:/DATA_PIPELINE/06_READY_TO_ARCHIVE",
+    "temp_dir": "D:/DATA_PIPELINE/TEMP",
+    "preview_cache_dir": "D:/DATA_PIPELINE/TEMP/preview_cache",
+    "database_path": "D:/DATA_PIPELINE/SYSTEM/pipeline.db",
+    "log_path": "D:/DATA_PIPELINE/SYSTEM/pipeline.log",
+    "runtime_config_path": "D:/DATA_PIPELINE/SYSTEM/config.json"
+  },
+  "scanner": {
+    "quick_hash_bytes": 65536,
+    "use_walk": true
+  }
+}
